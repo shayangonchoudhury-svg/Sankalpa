@@ -399,103 +399,6 @@ Sankalpa/
 
 ---
 
-# 🚀 Getting Started
-
-## 1. Clone the Repository
-
-```bash
-git clone <your-repository-url>
-cd Sankalpa
-```
-
-## 2. Install Dependencies
-
-```bash
-npm install
-```
-
-## 3. Configure Environment Variables
-
-Create `.env.local` and add:
-
-```env
-VITE_FIREBASE_API_KEY=
-VITE_FIREBASE_AUTH_DOMAIN=
-VITE_FIREBASE_PROJECT_ID=
-VITE_FIREBASE_STORAGE_BUCKET=
-VITE_FIREBASE_MESSAGING_SENDER_ID=
-VITE_FIREBASE_APP_ID=
-
-VITE_SUPABASE_URL=
-VITE_SUPABASE_PUBLISHABLE_KEY=
-
-VITE_FIREBASE_APPCHECK_SITE_KEY=
-```
-
-> Never expose Supabase service-role keys, Firebase Admin credentials, or other private secrets in the frontend.
-
-## 4. Start Development Server
-
-```bash
-npm run dev
-```
-
-## 5. Production Build
-
-```bash
-npm run build
-```
-
-## 6. Lint
-
-```bash
-npm run lint
-```
-
----
-
-# 🧪 Testing
-
-SANKALPA includes automated Firestore security testing through the Firebase Emulator.
-
-Start the emulator:
-
-```bash
-firebase emulators:start
-```
-
-Run the security tests:
-
-```bash
-npx tsx scripts/firestore_emulator_security_test.ts
-```
-
-### Regression Baseline
-
-```text
-175 / 175 tests passed
-```
-
-Coverage includes:
-
-- Security rules
-- Circles & challenges
-- Streak/cadence logic
-- Notifications
-- Check-in status
-- AI behavior
-
-### Build Status
-
-```text
-TypeScript       ✓
-ESLint           ✓
-Production Build ✓
-Security Tests   ✓
-```
-
----
-
 # 🌐 Deployment
 
 ## Vercel
@@ -668,17 +571,12 @@ Firestore remains the authoritative source of application state.
 
 # 👨‍💻 Author
 
-## Shayan Gon Choudhury
+**Shayan Gon Choudhury**
+Computer Science & Engineering Student
 
-**Computer Science & Engineering Student**
-
-Building projects around:
-
-- Web Development
-- Artificial Intelligence
-- Full-Stack Applications
-- Cloud Technologies
-- Secure Software Engineering
+* 💼 **LinkedIn:** [linkedin.com/in/shayan-gon-choudhury](https://www.linkedin.com/in/shayan-gon-choudhury-37a842315)
+* 🐙 **GitHub:** [@shayangonchoudhury-svg](https://github.com/shayangonchoudhury-svg)
+* 📧 **Email:** [shayangonchoudhuryskms@gmail.com](mailto:shayangonchoudhuryskms@gmail.com)
 
 ---
 
