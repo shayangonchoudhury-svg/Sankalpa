@@ -15,6 +15,16 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
+  const {
+  score: trustScore,
+  label: trustLabel,
+  totalCheckins,
+  approvedCount,
+  flaggedCount,
+  unrespondedCount,
+  loading: trustLoading,
+} = useTrustScore();
+
   // Sync form state when profile loads
   useEffect(() => {
     if (profile?.displayName) {
@@ -100,15 +110,6 @@ export default function Profile() {
   const currentEmail = profile?.email || user?.email || 'No email attached';
 
   // Private self-reflection trust score (computed entirely client-side, never shared)
-  const {
-    score: trustScore,
-    label: trustLabel,
-    totalCheckins,
-    approvedCount,
-    flaggedCount,
-    unrespondedCount,
-    loading: trustLoading,
-  } = useTrustScore();
 
   return (
     <div id="page-profile" className="px-4 py-6 max-w-[480px] mx-auto">
