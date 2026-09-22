@@ -27,7 +27,7 @@ function getPromptModel() {
   if (!ai) return null;
   try {
     cachedPromptModel = getGenerativeModel(ai, {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       generationConfig: {
         maxOutputTokens: 60,
         temperature: 0.7,
@@ -47,7 +47,7 @@ function getEvidenceModel() {
   if (!ai) return null;
   try {
     cachedEvidenceModel = getGenerativeModel(ai, {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       generationConfig: {
         maxOutputTokens: 150,
         temperature: 0.1,
