@@ -372,12 +372,13 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() &&
-        isValidId(actionId) &&
-        isValidWitnessAction(incoming()) &&
-        incoming().witnessId == request.auth.uid &&
-        exists(/databases/$(database)/documents/checkins/$(incoming().checkinId)) &&
-        get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.userId != request.auth.uid &&
-        isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.commitmentId);
+  isValidId(actionId) &&
+  actionId == incoming().checkinId + '_' + incoming().witnessId &&
+  isValidWitnessAction(incoming()) &&
+  incoming().witnessId == request.auth.uid &&
+  exists(/databases/$(database)/documents/checkins/$(incoming().checkinId)) &&
+  get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.userId != request.auth.uid &&
+  isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.commitmentId);
 
       allow update: if false;
       allow delete: if false;

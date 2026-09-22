@@ -147,15 +147,20 @@ export function useWitnessActions() {
       try {
         // Create witnessActions document
         // NOTE: We strictly DO NOT modify checkins/{id}.status
-        const newActionDoc = await addDoc(collection(db, 'witnessActions'), {
-          checkinId,
-          witnessId: user.uid,
-          responseType,
-          ...(trimmedNote && (responseType === 'asked_for_more' || responseType === 'flagged')
-            ? { note: trimmedNote }
-            : {}),
-          timestamp: serverTimestamp(),
-        });
+       const actionId = `${checkinId}_${user.uid}`;
+const actionRef = doc(db, 'witnessActions', actionId);
+
+await setDoc(actionRef, {
+  checkinId,
+  witnessId: user.uid,
+  responseType,
+  ...(trimmedNote && (responseType === 'asked_for_more' || responseType === 'flagged')
+    ? { note: trimmedNote }
+    : {}),
+  timestamp: serverTimestamp(),
+});
+
+const newActionDoc = actionRef;
 
         // Notify commitment/check-in owner if preference allows
         const ownerId = checkinData.userId;
