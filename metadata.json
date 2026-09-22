@@ -1,0 +1,6 @@
+{
+  "name": "SANKALPA",
+  "description": "A personal accountability social app for commitments, check-ins, and trusted witnesses.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

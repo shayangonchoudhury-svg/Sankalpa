@@ -1,0 +1,301 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all unspecified document paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function userEmail() {
+      return ('email' in request.auth.token && request.auth.token.email != null)
+        ? request.auth.token.email.lower()
+        : '';
+    }
+
+    function isCommitmentOwner(commitmentId) {
+      return isValidId(commitmentId) &&
+        exists(/databases/$(database)/documents/commitments/$(commitmentId)) &&
+        get(/databases/$(database)/documents/commitments/$(commitmentId)).data.ownerId == request.auth.uid;
+    }
+
+    function isAcceptedWitness(commitmentId) {
+      return isValidId(commitmentId) &&
+        exists(/databases/$(database)/documents/commitments/$(commitmentId)/witnesses/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/commitments/$(commitmentId)/witnesses/$(request.auth.uid)).data.status == 'accepted';
+    }
+
+    function canReadCheckin(checkinId) {
+      return isValidId(checkinId) &&
+        exists(/databases/$(database)/documents/checkins/$(checkinId)) &&
+        (
+          get(/databases/$(database)/documents/checkins/$(checkinId)).data.userId == request.auth.uid ||
+          isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(checkinId)).data.commitmentId)
+        );
+    }
+
+    // --------------------------------------------------
+    // USERS COLLECTION
+    // --------------------------------------------------
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'createdAt']) &&
+        data.uid is string && data.uid == request.auth.uid &&
+        data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 40 &&
+        data.email is string && data.email.size() <= 128 &&
+        (!('avatarUrl' in data) || data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 2048)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().uid == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl']);
+
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------
+    // COMMITMENTS COLLECTION & WITNESS MEMBERSHIP
+    // --------------------------------------------------
+    function isValidCommitment(data) {
+      return data.keys().hasAll(['ownerId', 'title', 'cadence', 'visibility', 'archived']) &&
+        data.keys().hasOnly(['ownerId', 'title', 'cadence', 'visibility', 'archived', 'description', 'circleId', 'createdAt']) &&
+        data.ownerId is string && data.ownerId == request.auth.uid &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 100 &&
+        data.cadence is string && data.cadence in ['daily', 'weekly', 'weekdays', 'monthly', 'custom'] &&
+        data.visibility is string && data.visibility in ['private', 'circle', 'public'] &&
+        data.archived is bool &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+        (!('circleId' in data) || (data.circleId is string && data.circleId.size() <= 128)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidWitnessMembership(data, witnessUid) {
+      return data.keys().hasAll(['uid', 'status']) &&
+        data.keys().hasOnly(['uid', 'status', 'createdAt']) &&
+        data.uid is string && data.uid == witnessUid &&
+        data.status is string && data.status == 'accepted' &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /commitments/{commitmentId} {
+      allow get: if isSignedIn() && isValidId(commitmentId) && (
+        resource.data.ownerId == request.auth.uid ||
+        isAcceptedWitness(commitmentId)
+      );
+
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(commitmentId) &&
+        isValidCommitment(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().archived == false;
+
+      allow update: if isSignedIn() &&
+        isValidId(commitmentId) &&
+        resource.data.ownerId == request.auth.uid &&
+        isValidCommitment(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'cadence', 'description']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['archived'])
+        );
+
+      allow delete: if false;
+
+      // Deterministic Witness Membership Subcollection
+      match /witnesses/{witnessUid} {
+        allow get, list: if isSignedIn() &&
+          isValidId(commitmentId) &&
+          isValidId(witnessUid) &&
+          (
+            isCommitmentOwner(commitmentId) ||
+            request.auth.uid == witnessUid
+          );
+
+        allow create, update: if isSignedIn() &&
+          isValidId(commitmentId) &&
+          isValidId(witnessUid) &&
+          request.auth.uid == witnessUid &&
+          exists(/databases/$(database)/documents/commitments/$(commitmentId)) &&
+          get(/databases/$(database)/documents/commitments/$(commitmentId)).data.ownerId != request.auth.uid &&
+          isValidWitnessMembership(incoming(), witnessUid);
+
+        allow delete: if isSignedIn() &&
+          isValidId(commitmentId) &&
+          isValidId(witnessUid) &&
+          (
+            isCommitmentOwner(commitmentId) ||
+            request.auth.uid == witnessUid
+          );
+      }
+    }
+
+    // --------------------------------------------------
+    // CHECKINS COLLECTION
+    // --------------------------------------------------
+    function isValidCheckin(data) {
+      return data.keys().hasAll(['commitmentId', 'userId', 'evidenceType', 'status']) &&
+        data.keys().hasOnly(['commitmentId', 'userId', 'evidenceType', 'status', 'evidenceUrl', 'note', 'timestamp']) &&
+        data.commitmentId is string && isValidId(data.commitmentId) &&
+        data.userId is string && data.userId == request.auth.uid &&
+        data.evidenceType is string && data.evidenceType in ['none', 'photo', 'video', 'link', 'text', 'metric'] &&
+        data.status is string && data.status == 'pending' &&
+        (!('evidenceUrl' in data) || (data.evidenceUrl is string && data.evidenceUrl.size() <= 2048)) &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 1000)) &&
+        (!('timestamp' in data) || data.timestamp is timestamp) &&
+        (('note' in data && data.note.size() > 0) || ('evidenceUrl' in data && data.evidenceUrl.size() > 0));
+    }
+
+    match /checkins/{checkinId} {
+      allow get: if isSignedIn() && isValidId(checkinId) && (
+        resource.data.userId == request.auth.uid ||
+        isAcceptedWitness(resource.data.commitmentId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (
+          resource.data.commitmentId != null && (
+            isCommitmentOwner(resource.data.commitmentId) ||
+            isAcceptedWitness(resource.data.commitmentId)
+          )
+        )
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(checkinId) &&
+        isValidCheckin(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        isCommitmentOwner(incoming().commitmentId);
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------
+    // WITNESS INVITATIONS COLLECTION
+    // --------------------------------------------------
+    function isValidWitnessInvite(data) {
+      return data.keys().hasAll(['commitmentId', 'fromUserId', 'toEmail', 'status']) &&
+        data.keys().hasOnly(['commitmentId', 'fromUserId', 'toEmail', 'status', 'toUserId', 'createdAt']) &&
+        data.commitmentId is string && isValidId(data.commitmentId) &&
+        data.fromUserId is string && data.fromUserId == request.auth.uid &&
+        data.toEmail is string && data.toEmail.size() >= 5 && data.toEmail.size() <= 128 &&
+        data.status is string && data.status in ['pending', 'accepted', 'declined'] &&
+        (!('toUserId' in data) || data.toUserId == null || (data.toUserId is string && data.toUserId.size() <= 128)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /witnessInvites/{inviteId} {
+      allow get: if isSignedIn() && isValidId(inviteId) && (
+        resource.data.fromUserId == request.auth.uid ||
+        (userEmail() != '' && resource.data.toEmail == userEmail()) ||
+        resource.data.toUserId == request.auth.uid ||
+        isCommitmentOwner(resource.data.commitmentId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.fromUserId == request.auth.uid ||
+        (userEmail() != '' && resource.data.toEmail == userEmail()) ||
+        resource.data.toUserId == request.auth.uid ||
+        (resource.data.commitmentId != null && isCommitmentOwner(resource.data.commitmentId))
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(inviteId) &&
+        isValidWitnessInvite(incoming()) &&
+        incoming().fromUserId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        (!('toUserId' in incoming()) || incoming().toUserId == null) &&
+        (userEmail() == '' || incoming().toEmail != userEmail()) &&
+        isCommitmentOwner(incoming().commitmentId);
+
+      allow update: if isSignedIn() &&
+        isValidId(inviteId) &&
+        userEmail() != '' &&
+        existing().toEmail == userEmail() &&
+        existing().status == 'pending' &&
+        isValidWitnessInvite(incoming()) &&
+        incoming().fromUserId == existing().fromUserId &&
+        incoming().commitmentId == existing().commitmentId &&
+        incoming().toEmail == existing().toEmail &&
+        (
+          (incoming().status == 'accepted' && incoming().toUserId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'toUserId'])) ||
+          (incoming().status == 'declined' && incoming().diff(existing()).affectedKeys().hasOnly(['status']))
+        );
+
+      allow delete: if isSignedIn() &&
+        isValidId(inviteId) &&
+        resource.data.fromUserId == request.auth.uid &&
+        resource.data.status == 'pending';
+    }
+
+    // --------------------------------------------------
+    // WITNESS ACTIONS COLLECTION
+    // --------------------------------------------------
+    function isValidWitnessAction(data) {
+      return data.keys().hasAll(['checkinId', 'witnessId', 'responseType']) &&
+        data.keys().hasOnly(['checkinId', 'witnessId', 'responseType', 'note', 'timestamp']) &&
+        data.checkinId is string && isValidId(data.checkinId) &&
+        data.witnessId is string && data.witnessId == request.auth.uid &&
+        data.responseType is string && data.responseType in ['approved', 'asked_for_more', 'flagged', 'confirm', 'reject', 'cheer'] &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        (!('timestamp' in data) || data.timestamp is timestamp);
+    }
+
+    match /witnessActions/{actionId} {
+      allow get: if isSignedIn() && isValidId(actionId) && (
+        resource.data.witnessId == request.auth.uid ||
+        canReadCheckin(resource.data.checkinId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.witnessId == request.auth.uid ||
+        (resource.data.checkinId != null && canReadCheckin(resource.data.checkinId))
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(actionId) &&
+        isValidWitnessAction(incoming()) &&
+        incoming().witnessId == request.auth.uid &&
+        exists(/databases/$(database)/documents/checkins/$(incoming().checkinId)) &&
+        get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.userId != request.auth.uid &&
+        isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.commitmentId);
+
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

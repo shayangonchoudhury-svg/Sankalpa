@@ -1,0 +1,721 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all unspecified document paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --------------------------------------------------
+    // HARDENED GLOBAL HELPERS
+    // --------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function userEmail() {
+      return ('email' in request.auth.token && request.auth.token.email != null)
+        ? request.auth.token.email.lower()
+        : '';
+    }
+
+    function isCommitmentOwner(commitmentId) {
+      return isValidId(commitmentId) &&
+        exists(/databases/$(database)/documents/commitments/$(commitmentId)) &&
+        get(/databases/$(database)/documents/commitments/$(commitmentId)).data.ownerId == request.auth.uid;
+    }
+
+    function isAcceptedWitness(commitmentId) {
+      return isValidId(commitmentId) &&
+        exists(/databases/$(database)/documents/commitments/$(commitmentId)/witnesses/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/commitments/$(commitmentId)/witnesses/$(request.auth.uid)).data.status == 'accepted';
+    }
+
+    function isAcceptedCircleMember(circleId) {
+      return isValidId(circleId) &&
+        exists(/databases/$(database)/documents/circles/$(circleId)/members/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/circles/$(circleId)/members/$(request.auth.uid)).data.status == 'accepted';
+    }
+
+    function isAcceptedCircleMemberByUid(circleId, uid) {
+      return isValidId(circleId) && isValidId(uid) &&
+        exists(/databases/$(database)/documents/circles/$(circleId)/members/$(uid)) &&
+        get(/databases/$(database)/documents/circles/$(circleId)/members/$(uid)).data.status == 'accepted';
+    }
+
+    function isCircleOwner(circleId) {
+      return isValidId(circleId) &&
+        exists(/databases/$(database)/documents/circles/$(circleId)) &&
+        get(/databases/$(database)/documents/circles/$(circleId)).data.ownerId == request.auth.uid;
+    }
+
+    function canReadCommitmentCircle(commitmentId) {
+      return isValidId(commitmentId) &&
+        exists(/databases/$(database)/documents/commitments/$(commitmentId)) &&
+        get(/databases/$(database)/documents/commitments/$(commitmentId)).data.visibility == 'circle' &&
+        ('circleId' in get(/databases/$(database)/documents/commitments/$(commitmentId)).data) &&
+        isAcceptedCircleMember(get(/databases/$(database)/documents/commitments/$(commitmentId)).data.circleId);
+    }
+
+    function canReadCheckin(checkinId) {
+      return isValidId(checkinId) &&
+        exists(/databases/$(database)/documents/checkins/$(checkinId)) &&
+        (
+          get(/databases/$(database)/documents/checkins/$(checkinId)).data.userId == request.auth.uid ||
+          isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(checkinId)).data.commitmentId) ||
+          canReadCommitmentCircle(get(/databases/$(database)/documents/checkins/$(checkinId)).data.commitmentId)
+        );
+    }
+
+    // --------------------------------------------------
+    // USERS COLLECTION
+    // --------------------------------------------------
+    function isValidNotificationPrefs(prefs) {
+      return prefs.keys().hasOnly(['checkinDue', 'witnessInvited', 'witnessResponded', 'challengeStarted']) &&
+        (!('checkinDue' in prefs) || prefs.checkinDue is bool) &&
+        (!('witnessInvited' in prefs) || prefs.witnessInvited is bool) &&
+        (!('witnessResponded' in prefs) || prefs.witnessResponded is bool) &&
+        (!('challengeStarted' in prefs) || prefs.challengeStarted is bool);
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email']) &&
+        (
+          data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'createdAt']) ||
+          data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'createdAt', 'notificationPrefs'])
+        ) &&
+        data.uid is string && data.uid == request.auth.uid &&
+        data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 40 &&
+        data.email is string && data.email.size() <= 128 &&
+        (!('avatarUrl' in data) || data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 2048)) &&
+        (!('notificationPrefs' in data) || (data.notificationPrefs is map && isValidNotificationPrefs(data.notificationPrefs))) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().uid == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'notificationPrefs'])
+        );
+
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------
+    // COMMITMENTS COLLECTION & WITNESS MEMBERSHIP
+    // --------------------------------------------------
+    function isValidCommitment(data) {
+      return data.keys().hasAll(['ownerId', 'title', 'cadence', 'visibility', 'archived']) &&
+        (
+          data.keys().hasOnly(['ownerId', 'title', 'cadence', 'visibility', 'archived', 'description', 'circleId', 'createdAt']) ||
+          data.keys().hasOnly(['ownerId', 'title', 'cadence', 'visibility', 'archived', 'description', 'circleId', 'challengeId', 'createdAt'])
+        ) &&
+        data.ownerId is string && isValidId(data.ownerId) &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 100 &&
+        data.cadence is string && data.cadence in ['daily', 'weekly', 'weekdays', 'monthly', 'custom'] &&
+        data.visibility is string && data.visibility in ['private', 'circle', 'public', 'witnesses_only'] &&
+        data.archived is bool &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+        (!('circleId' in data) || (data.circleId is string && isValidId(data.circleId))) &&
+        (!('challengeId' in data) || (data.challengeId is string && isValidId(data.challengeId))) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidWitnessMembership(data, witnessUid) {
+      return data.keys().hasAll(['uid', 'status']) &&
+        data.keys().hasOnly(['uid', 'status', 'inviteId', 'createdAt']) &&
+        data.uid is string && data.uid == witnessUid &&
+        data.status is string && data.status == 'accepted' &&
+        (!('inviteId' in data) || (data.inviteId is string && isValidId(data.inviteId))) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /commitments/{commitmentId} {
+      allow get: if isSignedIn() && isValidId(commitmentId) && (
+        resource.data.ownerId == request.auth.uid ||
+        isAcceptedWitness(commitmentId) ||
+        (
+          resource.data.visibility == 'circle' &&
+          ('circleId' in resource.data) &&
+          resource.data.circleId != null &&
+          isAcceptedCircleMember(resource.data.circleId)
+        )
+      );
+
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(commitmentId) &&
+        isValidCommitment(incoming()) &&
+        incoming().archived == false &&
+        (
+          (
+            (!('challengeId' in incoming()) || incoming().challengeId == null) &&
+            incoming().ownerId == request.auth.uid
+          ) ||
+          (
+            ('challengeId' in incoming()) &&
+            incoming().challengeId != null &&
+            isValidId(incoming().challengeId) &&
+            ('circleId' in incoming()) &&
+            incoming().circleId != null &&
+            isValidId(incoming().circleId) &&
+            incoming().visibility == 'circle' &&
+            existsAfter(/databases/$(database)/documents/challenges/$(incoming().challengeId)) &&
+            getAfter(/databases/$(database)/documents/challenges/$(incoming().challengeId)).data.createdBy == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/challenges/$(incoming().challengeId)).data.circleId == incoming().circleId &&
+            isAcceptedCircleMember(incoming().circleId) &&
+            isAcceptedCircleMemberByUid(incoming().circleId, incoming().ownerId) &&
+            existsAfter(/databases/$(database)/documents/challenges/$(incoming().challengeId)/participants/$(incoming().ownerId)) &&
+            getAfter(/databases/$(database)/documents/challenges/$(incoming().challengeId)/participants/$(incoming().ownerId)).data.commitmentId == commitmentId &&
+            getAfter(/databases/$(database)/documents/challenges/$(incoming().challengeId)/participants/$(incoming().ownerId)).data.circleId == incoming().circleId
+          )
+        );
+
+      allow update: if isSignedIn() &&
+        isValidId(commitmentId) &&
+        resource.data.ownerId == request.auth.uid &&
+        isValidCommitment(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'cadence', 'description']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['archived'])
+        );
+
+      allow delete: if false;
+
+      // Deterministic Witness Membership Subcollection
+      match /witnesses/{witnessUid} {
+        allow get, list: if isSignedIn() &&
+          isValidId(commitmentId) &&
+          isValidId(witnessUid) &&
+          (
+            isCommitmentOwner(commitmentId) ||
+            request.auth.uid == witnessUid
+          );
+
+        allow create, update: if isSignedIn() &&
+          isValidId(commitmentId) &&
+          isValidId(witnessUid) &&
+          request.auth.uid == witnessUid &&
+          exists(/databases/$(database)/documents/commitments/$(commitmentId)) &&
+          get(/databases/$(database)/documents/commitments/$(commitmentId)).data.ownerId != request.auth.uid &&
+          isValidWitnessMembership(incoming(), witnessUid) &&
+          ('inviteId' in incoming()) &&
+          isValidId(incoming().inviteId) &&
+          exists(/databases/$(database)/documents/witnessInvites/$(incoming().inviteId)) &&
+          get(/databases/$(database)/documents/witnessInvites/$(incoming().inviteId)).data.commitmentId == commitmentId &&
+          get(/databases/$(database)/documents/witnessInvites/$(incoming().inviteId)).data.toUserId == request.auth.uid &&
+          get(/databases/$(database)/documents/witnessInvites/$(incoming().inviteId)).data.status == 'accepted';
+
+        allow delete: if isSignedIn() &&
+          isValidId(commitmentId) &&
+          isValidId(witnessUid) &&
+          (
+            isCommitmentOwner(commitmentId) ||
+            request.auth.uid == witnessUid
+          );
+      }
+    }
+
+    // --------------------------------------------------
+    // CHECKINS COLLECTION
+    // --------------------------------------------------
+    function isValidCheckin(data) {
+      return data.keys().hasAll(['commitmentId', 'userId', 'evidenceType', 'status']) &&
+        data.keys().hasOnly(['commitmentId', 'userId', 'evidenceType', 'status', 'evidenceUrl', 'note', 'timestamp']) &&
+        data.commitmentId is string && isValidId(data.commitmentId) &&
+        data.userId is string && data.userId == request.auth.uid &&
+        data.evidenceType is string && data.evidenceType in ['none', 'photo', 'video', 'link', 'text', 'metric'] &&
+        data.status is string && data.status == 'pending' &&
+        (!('evidenceUrl' in data) || (data.evidenceUrl is string && data.evidenceUrl.size() <= 2048)) &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 1000)) &&
+        (!('timestamp' in data) || data.timestamp is timestamp) &&
+        (('note' in data && data.note.size() > 0) || ('evidenceUrl' in data && data.evidenceUrl.size() > 0));
+    }
+
+    match /checkins/{checkinId} {
+      allow get: if isSignedIn() && isValidId(checkinId) && (
+        resource.data.userId == request.auth.uid ||
+        isAcceptedWitness(resource.data.commitmentId) ||
+        canReadCommitmentCircle(resource.data.commitmentId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (
+          resource.data.commitmentId != null && (
+            isCommitmentOwner(resource.data.commitmentId) ||
+            isAcceptedWitness(resource.data.commitmentId) ||
+            canReadCommitmentCircle(resource.data.commitmentId)
+          )
+        )
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(checkinId) &&
+        isValidCheckin(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        isCommitmentOwner(incoming().commitmentId);
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------
+    // WITNESS INVITATIONS COLLECTION
+    // --------------------------------------------------
+    function isValidWitnessInvite(data) {
+      return data.keys().hasAll(['commitmentId', 'fromUserId', 'toEmail', 'status']) &&
+        data.keys().hasOnly(['commitmentId', 'fromUserId', 'toEmail', 'status', 'toUserId', 'createdAt']) &&
+        data.commitmentId is string && isValidId(data.commitmentId) &&
+        data.fromUserId is string && data.fromUserId == request.auth.uid &&
+        data.toEmail is string && data.toEmail.size() >= 5 && data.toEmail.size() <= 128 &&
+        data.status is string && data.status in ['pending', 'accepted', 'declined'] &&
+        (!('toUserId' in data) || data.toUserId == null || (data.toUserId is string && data.toUserId.size() <= 128)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /witnessInvites/{inviteId} {
+      allow get: if isSignedIn() && isValidId(inviteId) && (
+        resource.data.fromUserId == request.auth.uid ||
+        (userEmail() != '' && resource.data.toEmail == userEmail()) ||
+        resource.data.toUserId == request.auth.uid ||
+        isCommitmentOwner(resource.data.commitmentId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.fromUserId == request.auth.uid ||
+        (userEmail() != '' && resource.data.toEmail == userEmail()) ||
+        resource.data.toUserId == request.auth.uid ||
+        (resource.data.commitmentId != null && isCommitmentOwner(resource.data.commitmentId))
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(inviteId) &&
+        isValidWitnessInvite(incoming()) &&
+        incoming().fromUserId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        (!('toUserId' in incoming()) || incoming().toUserId == null) &&
+        (userEmail() == '' || incoming().toEmail != userEmail()) &&
+        isCommitmentOwner(incoming().commitmentId);
+
+      allow update: if isSignedIn() &&
+        isValidId(inviteId) &&
+        userEmail() != '' &&
+        existing().toEmail == userEmail() &&
+        existing().status == 'pending' &&
+        isValidWitnessInvite(incoming()) &&
+        incoming().fromUserId == existing().fromUserId &&
+        incoming().commitmentId == existing().commitmentId &&
+        incoming().toEmail == existing().toEmail &&
+        (
+          (incoming().status == 'accepted' && incoming().toUserId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'toUserId'])) ||
+          (incoming().status == 'declined' && incoming().diff(existing()).affectedKeys().hasOnly(['status']))
+        );
+
+      allow delete: if isSignedIn() &&
+        isValidId(inviteId) &&
+        resource.data.fromUserId == request.auth.uid &&
+        resource.data.status == 'pending';
+    }
+
+    // --------------------------------------------------
+    // WITNESS ACTIONS COLLECTION
+    // --------------------------------------------------
+    function isValidWitnessAction(data) {
+      return data.keys().hasAll(['checkinId', 'witnessId', 'responseType']) &&
+        data.keys().hasOnly(['checkinId', 'witnessId', 'responseType', 'note', 'timestamp']) &&
+        data.checkinId is string && isValidId(data.checkinId) &&
+        data.witnessId is string && data.witnessId == request.auth.uid &&
+        data.responseType is string && data.responseType in ['approved', 'asked_for_more', 'flagged', 'confirm', 'reject', 'cheer'] &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        (!('timestamp' in data) || data.timestamp is timestamp);
+    }
+
+    match /witnessActions/{actionId} {
+      allow get: if isSignedIn() && isValidId(actionId) && (
+        resource.data.witnessId == request.auth.uid ||
+        canReadCheckin(resource.data.checkinId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.witnessId == request.auth.uid ||
+        (resource.data.checkinId != null && canReadCheckin(resource.data.checkinId))
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(actionId) &&
+        isValidWitnessAction(incoming()) &&
+        incoming().witnessId == request.auth.uid &&
+        exists(/databases/$(database)/documents/checkins/$(incoming().checkinId)) &&
+        get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.userId != request.auth.uid &&
+        isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(incoming().checkinId)).data.commitmentId);
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------
+    // CIRCLES COLLECTION & MEMBERS
+    // --------------------------------------------------
+    function isValidCircle(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'memberCount']) &&
+        data.keys().hasOnly(['name', 'ownerId', 'memberCount', 'members', 'createdAt']) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 50 &&
+        data.ownerId is string && isValidId(data.ownerId) &&
+        data.memberCount is int && data.memberCount >= 1 && data.memberCount <= 10 &&
+        (!('members' in data) || (data.members is list && data.members.size() <= 10)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidCircleMember(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'status']) &&
+        data.keys().hasOnly(['uid', 'email', 'status', 'invitedBy', 'inviteId', 'createdAt']) &&
+        data.uid is string && data.uid == uid &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 128 &&
+        data.status is string && data.status in ['pending', 'accepted'] &&
+        (!('invitedBy' in data) || (data.invitedBy is string && isValidId(data.invitedBy))) &&
+        (!('inviteId' in data) || (data.inviteId is string && isValidId(data.inviteId))) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /circles/{circleId} {
+      allow get: if isSignedIn() && isValidId(circleId) && (
+        resource.data.ownerId == request.auth.uid ||
+        isAcceptedCircleMember(circleId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid ||
+        (request.auth.uid in resource.data.members)
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(circleId) &&
+        isValidCircle(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().memberCount == 1 &&
+        ('members' in incoming() && incoming().members == [request.auth.uid]) &&
+        existsAfter(/databases/$(database)/documents/circles/$(circleId)/members/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/circles/$(circleId)/members/$(request.auth.uid)).data.status == 'accepted' &&
+        getAfter(/databases/$(database)/documents/circles/$(circleId)/members/$(request.auth.uid)).data.uid == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        isValidId(circleId) &&
+        isValidCircle(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().name == existing().name &&
+        incoming().memberCount == existing().memberCount + 1 &&
+        incoming().memberCount <= 10 &&
+        existing().memberCount < 10;
+
+      allow delete: if false;
+
+      // Authoritative Deterministic Members Subcollection
+      match /members/{uid} {
+        allow get: if isSignedIn() && isValidId(circleId) && isValidId(uid) && (
+          isCircleOwner(circleId) ||
+          isAcceptedCircleMember(circleId) ||
+          request.auth.uid == uid
+        );
+
+        allow list: if isSignedIn() && isValidId(circleId) && (
+          isCircleOwner(circleId) ||
+          isAcceptedCircleMember(circleId)
+        );
+
+        allow create: if isSignedIn() &&
+          isValidId(circleId) &&
+          isValidId(uid) &&
+          isValidCircleMember(incoming(), uid) &&
+          (
+            // Initial owner membership
+            (
+              request.auth.uid == uid &&
+              incoming().status == 'accepted' &&
+              existsAfter(/databases/$(database)/documents/circles/$(circleId)) &&
+              getAfter(/databases/$(database)/documents/circles/$(circleId)).data.ownerId == request.auth.uid
+            ) ||
+            // Acceptance of a valid circle invite
+            (
+              request.auth.uid == uid &&
+              incoming().status == 'accepted' &&
+              ('inviteId' in incoming()) &&
+              isValidId(incoming().inviteId) &&
+              exists(/databases/$(database)/documents/circleInvites/$(incoming().inviteId)) &&
+              get(/databases/$(database)/documents/circleInvites/$(incoming().inviteId)).data.circleId == circleId &&
+              get(/databases/$(database)/documents/circleInvites/$(incoming().inviteId)).data.toEmail == userEmail() &&
+              get(/databases/$(database)/documents/circleInvites/$(incoming().inviteId)).data.status == 'pending' &&
+              getAfter(/databases/$(database)/documents/circleInvites/$(incoming().inviteId)).data.status == 'accepted' &&
+              getAfter(/databases/$(database)/documents/circleInvites/$(incoming().inviteId)).data.toUserId == request.auth.uid &&
+              exists(/databases/$(database)/documents/circles/$(circleId)) &&
+              get(/databases/$(database)/documents/circles/$(circleId)).data.memberCount < 10 &&
+              getAfter(/databases/$(database)/documents/circles/$(circleId)).data.memberCount <= 10
+            )
+          );
+
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+
+    // --------------------------------------------------
+    // CIRCLE INVITATIONS COLLECTION
+    // --------------------------------------------------
+    function isValidCircleInvite(data) {
+      return data.keys().hasAll(['circleId', 'circleName', 'fromUserId', 'toEmail', 'status']) &&
+        data.keys().hasOnly(['circleId', 'circleName', 'fromUserId', 'toEmail', 'status', 'toUserId', 'createdAt']) &&
+        data.circleId is string && isValidId(data.circleId) &&
+        data.circleName is string && data.circleName.size() >= 2 && data.circleName.size() <= 50 &&
+        data.fromUserId is string && data.fromUserId == request.auth.uid &&
+        data.toEmail is string && data.toEmail.size() >= 5 && data.toEmail.size() <= 128 &&
+        data.status is string && data.status in ['pending', 'accepted', 'declined'] &&
+        (!('toUserId' in data) || data.toUserId == null || (data.toUserId is string && isValidId(data.toUserId))) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    match /circleInvites/{inviteId} {
+      allow get: if isSignedIn() && isValidId(inviteId) && (
+        resource.data.fromUserId == request.auth.uid ||
+        (userEmail() != '' && resource.data.toEmail == userEmail()) ||
+        resource.data.toUserId == request.auth.uid ||
+        isCircleOwner(resource.data.circleId) ||
+        isAcceptedCircleMember(resource.data.circleId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.fromUserId == request.auth.uid ||
+        (userEmail() != '' && resource.data.toEmail == userEmail()) ||
+        resource.data.toUserId == request.auth.uid ||
+        (resource.data.circleId != null && (isCircleOwner(resource.data.circleId) || isAcceptedCircleMember(resource.data.circleId)))
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(inviteId) &&
+        isValidCircleInvite(incoming()) &&
+        incoming().fromUserId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        (!('toUserId' in incoming()) || incoming().toUserId == null) &&
+        (userEmail() == '' || incoming().toEmail != userEmail()) &&
+        (isCircleOwner(incoming().circleId) || isAcceptedCircleMember(incoming().circleId)) &&
+        exists(/databases/$(database)/documents/circles/$(incoming().circleId)) &&
+        get(/databases/$(database)/documents/circles/$(incoming().circleId)).data.memberCount < 10;
+
+      allow update: if isSignedIn() &&
+        isValidId(inviteId) &&
+        userEmail() != '' &&
+        existing().toEmail == userEmail() &&
+        existing().status == 'pending' &&
+        isValidCircleInvite(incoming()) &&
+        incoming().fromUserId == existing().fromUserId &&
+        incoming().circleId == existing().circleId &&
+        incoming().circleName == existing().circleName &&
+        incoming().toEmail == existing().toEmail &&
+        (
+          (
+            incoming().status == 'accepted' &&
+            incoming().toUserId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'toUserId']) &&
+            exists(/databases/$(database)/documents/circles/$(existing().circleId)) &&
+            get(/databases/$(database)/documents/circles/$(existing().circleId)).data.memberCount < 10
+          ) ||
+          (
+            incoming().status == 'declined' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status'])
+          )
+        );
+
+      allow delete: if isSignedIn() &&
+        isValidId(inviteId) &&
+        resource.data.fromUserId == request.auth.uid &&
+        resource.data.status == 'pending';
+    }
+
+    // --------------------------------------------------
+    // CHALLENGES COLLECTION & PARTICIPANTS
+    // --------------------------------------------------
+    function isValidChallenge(data) {
+      return data.keys().hasAll(['circleId', 'title', 'cadence', 'createdBy', 'active']) &&
+        data.keys().hasOnly(['circleId', 'title', 'cadence', 'description', 'createdBy', 'active', 'createdAt']) &&
+        data.circleId is string && isValidId(data.circleId) &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 100 &&
+        data.cadence is string && data.cadence in ['daily', 'weekly', 'weekdays', 'monthly', 'custom'] &&
+        data.createdBy is string && data.createdBy == request.auth.uid &&
+        data.active is bool &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidChallengeParticipant(data, uid) {
+      return data.keys().hasAll(['uid', 'circleId', 'commitmentId']) &&
+        data.keys().hasOnly(['uid', 'circleId', 'commitmentId', 'joinedAt']) &&
+        data.uid is string && data.uid == uid &&
+        data.circleId is string && isValidId(data.circleId) &&
+        data.commitmentId is string && isValidId(data.commitmentId) &&
+        (!('joinedAt' in data) || data.joinedAt is timestamp);
+    }
+
+    match /challenges/{challengeId} {
+      allow get: if isSignedIn() && isValidId(challengeId) && (
+        resource.data.createdBy == request.auth.uid ||
+        isAcceptedCircleMember(resource.data.circleId)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.createdBy == request.auth.uid ||
+        (resource.data.circleId != null && isAcceptedCircleMember(resource.data.circleId))
+      );
+
+      allow create: if isSignedIn() &&
+        isValidId(challengeId) &&
+        isValidChallenge(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().active == true &&
+        isAcceptedCircleMember(incoming().circleId);
+
+      allow update: if false;
+      allow delete: if false;
+
+      match /participants/{uid} {
+        allow get, list: if isSignedIn() && isValidId(challengeId) && isValidId(uid) && (
+          request.auth.uid == uid ||
+          isAcceptedCircleMember(resource.data.circleId) ||
+          (
+            exists(/databases/$(database)/documents/challenges/$(challengeId)) &&
+            isAcceptedCircleMember(get(/databases/$(database)/documents/challenges/$(challengeId)).data.circleId)
+          )
+        );
+
+        allow create: if isSignedIn() &&
+          isValidId(challengeId) &&
+          isValidId(uid) &&
+          isValidChallengeParticipant(incoming(), uid) &&
+          existsAfter(/databases/$(database)/documents/challenges/$(challengeId)) &&
+          getAfter(/databases/$(database)/documents/challenges/$(challengeId)).data.createdBy == request.auth.uid &&
+          incoming().circleId == getAfter(/databases/$(database)/documents/challenges/$(challengeId)).data.circleId &&
+          isAcceptedCircleMember(incoming().circleId) &&
+          isAcceptedCircleMemberByUid(incoming().circleId, uid) &&
+          existsAfter(/databases/$(database)/documents/commitments/$(incoming().commitmentId)) &&
+          getAfter(/databases/$(database)/documents/commitments/$(incoming().commitmentId)).data.ownerId == uid &&
+          getAfter(/databases/$(database)/documents/commitments/$(incoming().commitmentId)).data.challengeId == challengeId &&
+          getAfter(/databases/$(database)/documents/commitments/$(incoming().commitmentId)).data.circleId == incoming().circleId;
+
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+
+    // --------------------------------------------------
+    // NOTIFICATIONS COLLECTION (PHASE 10)
+    // --------------------------------------------------
+  function isValidNotificationType(type) {
+    return type in ['checkin_due', 'witness_invited', 'witness_responded', 'challenge_started'];
+  }
+
+  function isValidNotification(data) {
+    return data.keys().hasAll(['userId', 'type', 'title', 'body', 'relatedId', 'read']) &&
+      data.keys().hasOnly(['userId', 'type', 'title', 'body', 'relatedId', 'read', 'createdAt']) &&
+      data.userId is string && isValidId(data.userId) &&
+      data.type is string && isValidNotificationType(data.type) &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+      data.body is string && data.body.size() <= 500 &&
+      data.relatedId is string && isValidId(data.relatedId) &&
+      data.read is bool &&
+      (!('createdAt' in data) || data.createdAt is timestamp);
+  }
+
+  function canCreateNotification(data) {
+    return isValidNotification(data) &&
+      data.read == false &&
+      exists(/databases/$(database)/documents/users/$(data.userId)) &&
+      (
+        // 1. checkin_due: recipient is self, must be commitment owner
+        (
+          data.type == 'checkin_due' &&
+          data.userId == request.auth.uid &&
+          isCommitmentOwner(data.relatedId)
+        ) ||
+        // 2. witness_invited: actor is commitment owner, recipient is target user
+        (
+          data.type == 'witness_invited' &&
+          data.userId != request.auth.uid &&
+          isCommitmentOwner(data.relatedId)
+        ) ||
+        // 3. witness_responded: actor is accepted witness, recipient is commitment owner
+        (
+          data.type == 'witness_responded' &&
+          data.userId != request.auth.uid &&
+          (
+            // Subcase A: response to checkin
+            (
+              exists(/databases/$(database)/documents/checkins/$(data.relatedId)) &&
+              isAcceptedWitness(get(/databases/$(database)/documents/checkins/$(data.relatedId)).data.commitmentId) &&
+              data.userId == get(/databases/$(database)/documents/checkins/$(data.relatedId)).data.userId
+            ) ||
+            // Subcase B: acceptance of witness invite for commitment
+            (
+              isAcceptedWitness(data.relatedId) &&
+              data.userId == get(/databases/$(database)/documents/commitments/$(data.relatedId)).data.ownerId
+            )
+          )
+        ) ||
+        // 4. challenge_started: actor is challenge creator, recipient is accepted participant
+        (
+          data.type == 'challenge_started' &&
+          exists(/databases/$(database)/documents/challenges/$(data.relatedId)) &&
+          get(/databases/$(database)/documents/challenges/$(data.relatedId)).data.createdBy == request.auth.uid &&
+          exists(/databases/$(database)/documents/challenges/$(data.relatedId)/participants/$(data.userId))
+        )
+      );
+  }
+
+  match /notifications/{notificationId} {
+    allow get: if isSignedIn() && isValidId(notificationId) && resource.data.userId == request.auth.uid;
+
+    allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+    allow create: if isSignedIn() &&
+      isValidId(notificationId) &&
+      canCreateNotification(incoming());
+
+    allow update: if isSignedIn() &&
+      isValidId(notificationId) &&
+      resource.data.userId == request.auth.uid &&
+      incoming().userId == resource.data.userId &&
+      incoming().type == resource.data.type &&
+      incoming().relatedId == resource.data.relatedId &&
+      incoming().diff(resource.data).affectedKeys().hasOnly(['read']) &&
+      incoming().read is bool;
+
+    allow delete: if false;
+  }
+}
+}

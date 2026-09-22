@@ -1,0 +1,131 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile representation in SANKALPA.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User Firebase Auth UID." },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 40, "description": "Display name of practitioner or witness." },
+        "email": { "type": "string", "maxLength": 128, "description": "Primary email address." },
+        "avatarUrl": { "type": "string", "maxLength": 2048, "description": "Avatar image URL or storage reference." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of profile initialization." }
+      },
+      "required": ["uid", "displayName", "email"]
+    },
+    "Commitment": {
+      "title": "Commitment",
+      "description": "Personal practice commitment created by a practitioner.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "description": "Firebase UID of practitioner owner." },
+        "title": { "type": "string", "minLength": 3, "maxLength": 100, "description": "Commitment vow or goal title." },
+        "cadence": { "type": "string", "enum": ["daily", "weekly", "weekdays", "monthly", "custom"], "description": "Frequency of practice." },
+        "visibility": { "type": "string", "enum": ["private", "circle", "public"], "description": "Privacy visibility setting." },
+        "description": { "type": "string", "maxLength": 500, "description": "Optional details or guidelines." },
+        "archived": { "type": "boolean", "description": "Archived status." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp." }
+      },
+      "required": ["ownerId", "title", "cadence", "visibility", "archived"]
+    },
+    "WitnessMembership": {
+      "title": "WitnessMembership",
+      "description": "Deterministic authorization record indicating an accepted witness for a commitment.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID of the accepted witness." },
+        "status": { "type": "string", "enum": ["accepted"], "description": "Authorization membership status." },
+        "inviteId": { "type": "string", "maxLength": 128, "description": "Document ID of accepted witness invite." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when invitation was accepted." }
+      },
+      "required": ["uid", "status"]
+    },
+    "Checkin": {
+      "title": "Checkin",
+      "description": "Evidence or record of fulfilling a commitment vow.",
+      "type": "object",
+      "properties": {
+        "commitmentId": { "type": "string", "maxLength": 128, "description": "Reference to parent commitment document ID." },
+        "userId": { "type": "string", "description": "Author UID (must match commitment owner)." },
+        "evidenceType": { "type": "string", "enum": ["none", "photo", "video", "link", "text", "metric"], "description": "Format of evidence." },
+        "evidenceUrl": { "type": "string", "maxLength": 2048, "description": "Public URL of uploaded evidence." },
+        "note": { "type": "string", "maxLength": 1000, "description": "Practitioner reflection or note." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Submission timestamp." },
+        "status": { "type": "string", "enum": ["pending", "verified", "rejected", "disputed"], "description": "Review status (remains pending in current system)." }
+      },
+      "required": ["commitmentId", "userId", "evidenceType", "status"]
+    },
+    "WitnessInvite": {
+      "title": "WitnessInvite",
+      "description": "Invitation sent by practitioner to request witness accountability.",
+      "type": "object",
+      "properties": {
+        "commitmentId": { "type": "string", "maxLength": 128, "description": "Target commitment ID." },
+        "fromUserId": { "type": "string", "description": "Practitioner UID sending the invite." },
+        "toEmail": { "type": "string", "maxLength": 128, "description": "Normalized recipient email address." },
+        "toUserId": { "type": "string", "description": "Recipient UID (populated upon acceptance)." },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"], "description": "Invitation status." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of invitation dispatch." }
+      },
+      "required": ["commitmentId", "fromUserId", "toEmail", "status"]
+    },
+    "WitnessAction": {
+      "title": "WitnessAction",
+      "description": "Response log created by an accepted witness reviewing a check-in.",
+      "type": "object",
+      "properties": {
+        "checkinId": { "type": "string", "maxLength": 128, "description": "Target check-in document ID." },
+        "witnessId": { "type": "string", "description": "UID of the reviewing witness." },
+        "responseType": { "type": "string", "enum": ["approved", "asked_for_more", "flagged", "confirm", "reject", "cheer"], "description": "Witness action type." },
+        "note": { "type": "string", "maxLength": 500, "description": "Optional commentary or feedback." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Timestamp of review action." }
+      },
+      "required": ["checkinId", "witnessId", "responseType"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notifications for practitioners and witnesses.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Recipient Firebase Auth UID." },
+        "type": { "type": "string", "enum": ["checkin_due", "witness_invited", "witness_responded", "challenge_started"], "description": "Notification category." },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Short headline." },
+        "body": { "type": "string", "maxLength": 500, "description": "Notification details." },
+        "relatedId": { "type": "string", "description": "Related commitment, checkin, or challenge ID." },
+        "read": { "type": "boolean", "description": "Read status." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp." }
+      },
+      "required": ["userId", "type", "title", "body", "relatedId", "read"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Practitioner and witness user profile documents."
+    },
+    "/commitments/{commitmentId}": {
+      "schema": "Commitment",
+      "description": "Practitioner vows and commitments."
+    },
+    "/commitments/{commitmentId}/witnesses/{witnessUid}": {
+      "schema": "WitnessMembership",
+      "description": "Deterministic subcollection mapping accepted witness UIDs for a commitment."
+    },
+    "/checkins/{checkinId}": {
+      "schema": "Checkin",
+      "description": "Practitioner check-ins with notes and evidence."
+    },
+    "/witnessInvites/{inviteId}": {
+      "schema": "WitnessInvite",
+      "description": "Witness invitations sent to specific emails."
+    },
+    "/witnessActions/{actionId}": {
+      "schema": "WitnessAction",
+      "description": "Review and response actions submitted by accepted witnesses."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "In-app notifications collection for authenticated users."
+    }
+  }
+}
