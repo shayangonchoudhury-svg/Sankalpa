@@ -1,7 +1,11 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { initializeFirestore, getFirestore } from 'firebase/firestore';
-import { initializeAppCheck, CustomProvider } from 'firebase/app-check';
+import {
+  initializeAppCheck,
+  CustomProvider,
+  ReCaptchaEnterpriseProvider,
+} from 'firebase/app-check';
 import { getAI, GoogleAIBackend } from 'firebase/ai';
 
 const getEnvVar = (key: string): string => {
@@ -50,13 +54,18 @@ export const db = firestoreDb;
 export const googleProvider = new GoogleAuthProvider();
 export const firebaseProjectId = firebaseConfig.projectId;
 
-// Configure Firebase App Check for Web when debug token is provided
+// Configure Firebase App Check for Web
 export let appCheck: any = null;
+
 if (typeof window !== 'undefined' && isFirebaseConfigured) {
   try {
     const debugToken = getEnvVar('VITE_APPCHECK_DEBUG_TOKEN');
+    const recaptchaSiteKey = getEnvVar('VITE_FIREBASE_APPCHECK_SITE_KEY');
+
     if (debugToken) {
+      // Local development / emulator
       (self as any).FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
+
       appCheck = initializeAppCheck(app, {
         provider: new CustomProvider({
           getToken: async () => ({
@@ -66,9 +75,18 @@ if (typeof window !== 'undefined' && isFirebaseConfigured) {
         }),
         isTokenAutoRefreshEnabled: true,
       });
+    } else if (recaptchaSiteKey) {
+      // Production: reCAPTCHA Enterprise
+      appCheck = initializeAppCheck(app, {
+        provider: new ReCaptchaEnterpriseProvider(recaptchaSiteKey),
+        isTokenAutoRefreshEnabled: true,
+      });
     }
   } catch (err) {
-    console.warn('Firebase App Check initialization skipped/deferred:', err);
+    console.warn(
+      'Firebase App Check initialization skipped/deferred:',
+      err
+    );
   }
 }
 
