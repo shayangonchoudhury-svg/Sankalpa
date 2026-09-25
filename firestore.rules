@@ -296,7 +296,7 @@ service cloud.firestore {
       return data.keys().hasAll(['commitmentId', 'fromUserId', 'toEmail', 'status']) &&
         data.keys().hasOnly(['commitmentId', 'fromUserId', 'toEmail', 'status', 'toUserId', 'createdAt']) &&
         data.commitmentId is string && isValidId(data.commitmentId) &&
-        data.fromUserId is string && data.fromUserId == request.auth.uid &&
+        data.fromUserId is string &&
         data.toEmail is string && data.toEmail.size() >= 5 && data.toEmail.size() <= 128 &&
         data.status is string && data.status in ['pending', 'accepted', 'declined'] &&
         (!('toUserId' in data) || data.toUserId == null || (data.toUserId is string && data.toUserId.size() <= 128)) &&
@@ -496,7 +496,7 @@ service cloud.firestore {
         data.keys().hasOnly(['circleId', 'circleName', 'fromUserId', 'toEmail', 'status', 'toUserId', 'createdAt']) &&
         data.circleId is string && isValidId(data.circleId) &&
         data.circleName is string && data.circleName.size() >= 2 && data.circleName.size() <= 50 &&
-        data.fromUserId is string && data.fromUserId == request.auth.uid &&
+        data.fromUserId is string &&
         data.toEmail is string && data.toEmail.size() >= 5 && data.toEmail.size() <= 128 &&
         data.status is string && data.status in ['pending', 'accepted', 'declined'] &&
         (!('toUserId' in data) || data.toUserId == null || (data.toUserId is string && isValidId(data.toUserId))) &&
